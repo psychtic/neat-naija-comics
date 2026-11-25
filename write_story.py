@@ -1,8 +1,33 @@
 import json, os, random, glob, datetime, time, urllib.request, urllib.error
 
 API_KEY = os.environ["GEMINI_API_KEY"]
-# The robot tries these models in order. If one is busy it waits, retries, then moves to the next.
-MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+BASE = "https://generativelanguage.googleapis.com/v1beta/"
+
+# Preferred models first. The robot also asks Google which flash models exist today,
+# so old names being retired will not break it.
+PREFERRED = ["gemini-3.8-flash", "gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
+SKIP_WORDS = ("tts", "image", "live", "audio", "embedding", "robotics", "computer", "thinking-exp")
+
+
+def find_models():
+    models = list(PREFERRED)
+    try:
+        req = urllib.request.Request(BASE + "models?pageSize=200", headers={"x-goog-api-key": API_KEY})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            listing = json.load(r)
+        for m in listing.get("models", []):
+            name = m["name"].replace("models/", "")
+            if "generateContent" not in m.get("supportedGenerationMethods", []):
+                continue
+            if "flash" not in name or any(w in name for w in SKIP_WORDS):
+                continue
+            if name not in models:
+                models.append(name)
+    except Exception as e:
+        print("Could not list models:", e)
+    print("Models to try:", models)
+    return models
+
 
 CAST = (
     "Chidi: young Nigerian man in his late 20s, short black hair, casual t-shirt. "
@@ -42,13 +67,17 @@ body = json.dumps({
     "generationConfig": {"responseMimeType": "application/json"},
 }).encode("utf-8")
 
+models = find_models()
+dead = set()  # models that do not exist for us (404/400/403): never try them again
 story = None
-for model in MODELS:
-    url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent"
-    for attempt in range(4):
+
+for round_number in range(5):
+    for model in models:
+        if model in dead:
+            continue
         try:
             req = urllib.request.Request(
-                url,
+                BASE + "models/" + model + ":generateContent",
                 data=body,
                 headers={"Content-Type": "application/json", "x-goog-api-key": API_KEY},
             )
@@ -57,21 +86,20 @@ for model in MODELS:
             candidate = json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
             if len(candidate["scenes"]) == 6:
                 story = candidate
+                print("Used model:", model)
                 break
-            print("Model", model, "gave", len(candidate["scenes"]), "scenes, trying again")
+            print(model, "gave", len(candidate["scenes"]), "scenes, moving on")
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "ignore")[:300]
-            print("Model", model, "attempt", attempt + 1, "failed with", e.code, detail)
-            if e.code in (429, 500, 502, 503, 504):
-                time.sleep(15 * (attempt + 1))
-                continue
-            break  # a different kind of error: skip to the next model
+            detail = e.read().decode("utf-8", "ignore")[:200].replace("\n", " ")
+            print(model, "failed with", e.code, detail)
+            if e.code not in (429, 500, 502, 503, 504):
+                dead.add(model)
         except Exception as e:
-            print("Model", model, "attempt", attempt + 1, "problem:", e)
-            time.sleep(5)
+            print(model, "problem:", e)
     if story:
-        print("Used model:", model)
         break
+    print("Round", round_number + 1, "failed. Waiting before trying again.")
+    time.sleep(20 * (round_number + 1))
 
 if not story:
     raise SystemExit("All models failed. Try again later.")
