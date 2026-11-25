@@ -8,12 +8,13 @@ UA = {"User-Agent": "Mozilla/5.0 (neatnaija-robot)"}
 KEEP_COMICS = 14  # only the newest comics keep their pictures, so the repo stays small
 
 STYLE = (
-    "Colourful comic book illustration, bold clean outlines, flat vibrant colours, "
-    "funny expressive faces, everyday Nigerian setting, square panel. "
-    "Absolutely no text, no letters, no words and no speech bubbles in the picture."
+    "2D cartoon comic strip illustration, thick black outlines, flat bright colours, "
+    "exaggerated funny expressions, wide shot showing the whole scene, "
+    "all adults fully clothed in everyday clothes, family friendly, everyday Nigerian setting. "
+    "No text, no letters, no words, no logos, no watermark."
 )
 CAST = {
-    "chidi": "Chidi is a young Nigerian man in his late 20s with short black hair, wearing a casual t-shirt.",
+    "chidi": "Chidi is an adult Nigerian man in his late 20s with short black hair and a small beard, wearing a casual t-shirt and trousers.",
     "ngozi": "Aunty Ngozi is a middle-aged Nigerian woman in a colourful wrapper and blouse with a gele headwrap.",
     "attendant": "The Neat Naija attendant is a professional Nigerian person in a neat green uniform and glasses.",
 }
@@ -40,10 +41,20 @@ def from_pollinations(prompt, seed):
         try:
             raw, ctype = fetch(u)
             if ctype.startswith("image/") and len(raw) > 5000:
-                return Image.open(io.BytesIO(raw)).convert("RGB")
+                im = Image.open(io.BytesIO(raw)).convert("RGB")
+                return im.crop((0, 0, im.width, int(im.height * 0.92)))
             print(host, "answered but it was not a picture:", ctype, len(raw))
         except urllib.error.HTTPError as e:
             print(host, "failed with", e.code, e.read()[:150])
+            if e.code == 402:
+                time.sleep(48)  # free limit: 1 picture every 45 seconds
+                try:
+                    raw, ctype = fetch(u)
+                    if ctype.startswith("image/") and len(raw) > 5000:
+                        im = Image.open(io.BytesIO(raw)).convert("RGB")
+                        return im.crop((0, 0, im.width, int(im.height * 0.92)))
+                except Exception as e2:
+                    print(host, "retry problem:", e2)
         except Exception as e:
             print(host, "problem:", e)
     return None
@@ -93,7 +104,7 @@ def get_picture(prompt, seed, gemini_models):
         img = from_pollinations(prompt, seed)
         if img:
             return img
-        img = from_gemini(prompt, gemini_models)
+        img = from_gemini(prompt, gemini_models) if attempt == 2 else None
         if img:
             return img
         print("No picture on attempt", attempt + 1, "- waiting")
@@ -215,7 +226,7 @@ for path in todo:
         panel.save(out_dir + "/panel-" + str(i) + ".jpg", quality=88)
         panels.append(panel)
         print("Scene", i, "done")
-        time.sleep(4)
+        time.sleep(46)
 
     make_comic(panels, story["title"]).save(out_dir + "/comic.jpg", quality=88)
     print("Comic saved in", out_dir)
