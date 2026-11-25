@@ -1,7 +1,8 @@
-import json, os, random, glob, datetime, urllib.request
+import json, os, random, glob, datetime, time, urllib.request, urllib.error
 
 API_KEY = os.environ["GEMINI_API_KEY"]
-MODEL = "gemini-flash-latest"
+# The robot tries these models in order. If one is busy it waits, retries, then moves to the next.
+MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
 
 CAST = (
     "Chidi: young Nigerian man in his late 20s, short black hair, casual t-shirt. "
@@ -36,22 +37,44 @@ prompt = (
     "dialogue is short speech in Pidgin. caption is one funny line."
 )
 
-url = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent"
-body = {
+body = json.dumps({
     "contents": [{"parts": [{"text": prompt}]}],
     "generationConfig": {"responseMimeType": "application/json"},
-}
-req = urllib.request.Request(
-    url,
-    data=json.dumps(body).encode("utf-8"),
-    headers={"Content-Type": "application/json", "x-goog-api-key": API_KEY},
-)
-with urllib.request.urlopen(req, timeout=120) as r:
-    data = json.load(r)
+}).encode("utf-8")
 
-story = json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
-if len(story["scenes"]) != 6:
-    raise SystemExit("Story did not have 6 scenes")
+story = None
+for model in MODELS:
+    url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent"
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={"Content-Type": "application/json", "x-goog-api-key": API_KEY},
+            )
+            with urllib.request.urlopen(req, timeout=120) as r:
+                data = json.load(r)
+            candidate = json.loads(data["candidates"][0]["content"]["parts"][0]["text"])
+            if len(candidate["scenes"]) == 6:
+                story = candidate
+                break
+            print("Model", model, "gave", len(candidate["scenes"]), "scenes, trying again")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "ignore")[:300]
+            print("Model", model, "attempt", attempt + 1, "failed with", e.code, detail)
+            if e.code in (429, 500, 502, 503, 504):
+                time.sleep(15 * (attempt + 1))
+                continue
+            break  # a different kind of error: skip to the next model
+        except Exception as e:
+            print("Model", model, "attempt", attempt + 1, "problem:", e)
+            time.sleep(5)
+    if story:
+        print("Used model:", model)
+        break
+
+if not story:
+    raise SystemExit("All models failed. Try again later.")
 
 name = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d-%H%M")
 with open("stories/" + name + ".json", "w", encoding="utf-8") as out:
